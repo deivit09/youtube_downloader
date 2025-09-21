@@ -1,0 +1,7 @@
+2025-09-21 12:36:52,819 - root - INFO - Logging configurado.
+🎌 Anime Downloader v1.0.0 - 📺 MODO ESTÁNDAR
+2025-09-21 12:36:52,888 - downloader - INFO - Downloader inicializado - Calidad: 720p
+2025-09-21 12:36:52,945 - root - INFO - Logging configurado.
+2025-09-21 12:37:03,295 - downloader - INFO - Ruta de descarga actualizada a: /home/dondavo/descargas/Music/fazzini
+2025-09-21 12:37:23,737 - downloader - INFO - Iniciando descarga de: https://www.youtube.com/watch?v=iqqyStEQ9aU&list=RDiqqyStEQ9aU&start_radio=1 | Formato: MP3
+2025-09-21 12:37:23,738 - downloader - INFO - Espacio disponible: 389.82 GB
