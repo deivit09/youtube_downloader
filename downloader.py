@@ -5,12 +5,11 @@ from pathlib import Path
 import yt_dlp
 import ffmpeg
 import os
-from threading import Event
 
 from config import Config
 from utils import clean_filename, check_disk_space, format_bytes
 
-# La clase SafeProgressHook se mantiene igual que antes
+# La clase SafeProgressHook se mantiene igual
 class SafeProgressHook:
     def __init__(self, callback=None, cancel_event=None):
         self.callback = callback
@@ -20,18 +19,14 @@ class SafeProgressHook:
     def __call__(self, data):
         if self.cancel_event and self.cancel_event.is_set():
             raise Exception("Descarga cancelada por el usuario.")
-        
         if not self.callback: return
-
         try:
             current_time = time.time()
-            if current_time - self.last_update < 0.5: return # Actualizar un poco más rápido
+            if current_time - self.last_update < 0.5: return
             self.last_update = current_time
-            
             status = data.get('status')
             info_dict = data.get('info_dict', {})
             video_id = info_dict.get('id')
-            
             if status == 'downloading':
                 progress_data = {
                     'status': 'downloading',
@@ -49,16 +44,14 @@ class SafeProgressHook:
                 }
             else:
                 return
-            
             self.callback(progress_data)
         except Exception as e:
             if "cancelada por el usuario" in str(e): raise e
             logging.debug(f"Error en callback (ignorado): {e}")
 
 class AnimeDownloader:
-    def __init__(self, output_path=None, quality='720p', max_retries=3):
+    def __init__(self, output_path=None, max_retries=3):
         self.output_path = Path(output_path or Config.DOWNLOAD_PATH).expanduser().resolve()
-        self.quality = quality
         self.max_retries = max_retries
         self.logger = logging.getLogger(__name__)
         self.output_path.mkdir(parents=True, exist_ok=True)
@@ -70,38 +63,47 @@ class AnimeDownloader:
             'ignoreerrors': True, 'retries': self.max_retries, 'socket_timeout': 30,
             'progress_hooks': [SafeProgressHook(progress_callback, cancel_event)],
         }
+        
         fmt = task['format']
+        quality = task.get('quality', '720p')
+
         if fmt == 'mp3':
             config['format'] = 'bestaudio/best'
             config['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': task.get('audio_bitrate', '192')}]
-        elif fmt == 'mkv':
-             config['format'] = f'bestvideo[height<={self.quality[:-1]}]+bestaudio/best[height<={self.quality[:-1]}]'
-             config['merge_output_format'] = 'mkv'
-        else: # MP4 o Original
-            config['format'] = f'bestvideo[ext=mp4][height<={self.quality[:-1]}]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-            if fmt == 'mp4': config['merge_output_format'] = 'mp4'
+        else:
+            # --- LÓGICA DE CALIDAD CORREGIDA ---
+            if quality == 'best':
+                format_selector = 'bestvideo+bestaudio/best'
+            else:
+                # Selector más flexible para 1080p y superior, que permite a yt-dlp fusionar video y audio
+                quality_val = quality[:-1] # "720p" -> "720"
+                format_selector = f'bestvideo[height<={quality_val}]+bestaudio/best[height<={quality_val}]'
+            
+            config['format'] = format_selector
+            if fmt == 'mkv':
+                config['merge_output_format'] = 'mkv'
+            elif fmt == 'mp4':
+                config['merge_output_format'] = 'mp4'
+
         return config
 
     def get_video_info(self, url):
         self.logger.info(f"Obteniendo información de: {url}")
         try:
-            # --- CAMBIO CLAVE AQUÍ ---
-            # Añadimos 'noplaylist': False para forzar que detecte la playlist
             opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'skip_download': True, 'noplaylist': False}
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                
-                if 'entries' in info and info['entries']: # Es una playlist o canal
+                if 'entries' in info and info['entries']:
                     return {
                         'type': 'playlist',
-                        'title': info.get('title', 'Playlist sin título'),
+                        'title': info.get('title', 'Playlist'),
                         'uploader': info.get('uploader', 'Desconocido'),
                         'entries': [self._parse_entry(entry) for entry in info['entries'] if entry]
                     }
-                else: # Es un video individual
+                else:
                     return {'type': 'video', 'entries': [self._parse_entry(info)]}
         except Exception as e:
-            self.logger.error(f"Error obteniendo información del video: {e}")
+            self.logger.error(f"Error obteniendo información: {e}")
             return {'type': 'error', 'message': str(e)}
 
     def _parse_entry(self, entry):
@@ -114,23 +116,16 @@ class AnimeDownloader:
         }
 
     def download_task(self, task, progress_callback, cancel_event):
-        self.logger.info(f"Iniciando descarga de: {task['url']} | Formato: {task['format'].upper()}")
-        if not self._check_available_space():
-            if progress_callback: progress_callback({'status': 'error', 'error_message': 'Espacio insuficiente.'})
-            return
-        
+        self.logger.info(f"Iniciando descarga de: {task['url']} | Formato: {task['format'].upper()} | Calidad: {task.get('quality', 'N/A')}")
         ydl_opts = self._get_ydl_config(progress_callback, cancel_event, task)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(task['url'], download=True)
-            if not info: raise Exception("yt-dlp no devolvió información.")
+                ydl.extract_info(task['url'], download=True)
         except Exception as e:
-            if "cancelada por el usuario" in str(e):
-                self.logger.info(f"Descarga de {task['id']} cancelada.")
-                progress_callback({'status': 'cancelled', 'video_id': task['id']})
-            else:
-                self.logger.error(f"Fallo la descarga de {task['url']} con error: {e}")
-                progress_callback({'status': 'error', 'error_message': str(e), 'video_id': task['id']})
+            status = 'cancelled' if "cancelada por el usuario" in str(e) else 'error'
+            message = "Cancelado" if status == 'cancelled' else str(e)
+            self.logger.info(f"Descarga de {task['id']} finalizada con estado: {status}")
+            progress_callback({'status': status, 'error_message': message, 'video_id': task['id']})
 
     def set_output_path(self, path):
         self.output_path = Path(path).expanduser().resolve()
@@ -143,4 +138,4 @@ class AnimeDownloader:
             if available < (min_space_gb * 1024**3): return False
             return True
         except Exception:
-            return True # Asumir que hay espacio si la verificación falla
+            return True
