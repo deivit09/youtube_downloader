@@ -10,6 +10,7 @@ from threading import Event
 from config import Config
 from utils import clean_filename, check_disk_space, format_bytes
 
+# La clase SafeProgressHook se mantiene igual que antes
 class SafeProgressHook:
     def __init__(self, callback=None, cancel_event=None):
         self.callback = callback
@@ -24,27 +25,27 @@ class SafeProgressHook:
 
         try:
             current_time = time.time()
-            if current_time - self.last_update < 1.0: return
+            if current_time - self.last_update < 0.5: return # Actualizar un poco más rápido
             self.last_update = current_time
             
             status = data.get('status')
+            info_dict = data.get('info_dict', {})
+            video_id = info_dict.get('id')
             
             if status == 'downloading':
-                info_dict = data.get('info_dict', {})
                 progress_data = {
                     'status': 'downloading',
                     'percentage': (data.get('downloaded_bytes', 0) / (data.get('total_bytes') or data.get('total_bytes_estimate', 1))) * 100,
                     'downloaded_bytes': int(data.get('downloaded_bytes', 0)),
                     'total_bytes': int(data.get('total_bytes') or data.get('total_bytes_estimate', 0)),
                     'speed': int(data.get('speed', 0)),
-                    'filename': info_dict.get('filename', ''),
-                    'video_id': info_dict.get('id'),
+                    'video_id': video_id,
                 }
             elif status == 'finished':
                 progress_data = {
                     'status': 'finished',
-                    'filename': data.get('info_dict', {}).get('filename', ''),
-                    'video_id': data.get('info_dict', {}).get('id'),
+                    'filename': info_dict.get('filepath') or info_dict.get('filename'),
+                    'video_id': video_id,
                 }
             else:
                 return
@@ -68,47 +69,37 @@ class AnimeDownloader:
             'quiet': True, 'noprogress': True, 'no_warnings': True,
             'ignoreerrors': True, 'retries': self.max_retries, 'socket_timeout': 30,
             'progress_hooks': [SafeProgressHook(progress_callback, cancel_event)],
-            'noplaylist': task['type'] != 'playlist',
         }
-
         fmt = task['format']
         if fmt == 'mp3':
             config['format'] = 'bestaudio/best'
-            config['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': task.get('audio_bitrate', '192'),
-            }]
+            config['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': task.get('audio_bitrate', '192')}]
         elif fmt == 'mkv':
              config['format'] = f'bestvideo[height<={self.quality[:-1]}]+bestaudio/best[height<={self.quality[:-1]}]'
              config['merge_output_format'] = 'mkv'
         else: # MP4 o Original
             config['format'] = f'bestvideo[ext=mp4][height<={self.quality[:-1]}]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-            if fmt == 'mp4':
-                config['merge_output_format'] = 'mp4'
-
+            if fmt == 'mp4': config['merge_output_format'] = 'mp4'
         return config
 
     def get_video_info(self, url):
-        """Obtiene información de una URL (video o playlist)."""
         self.logger.info(f"Obteniendo información de: {url}")
         try:
-            opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'skip_download': True}
+            # --- CAMBIO CLAVE AQUÍ ---
+            # Añadimos 'noplaylist': False para forzar que detecte la playlist
+            opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'skip_download': True, 'noplaylist': False}
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 
-                if 'entries' in info: # Es una playlist o canal
+                if 'entries' in info and info['entries']: # Es una playlist o canal
                     return {
                         'type': 'playlist',
                         'title': info.get('title', 'Playlist sin título'),
                         'uploader': info.get('uploader', 'Desconocido'),
-                        'entries': [self._parse_entry(entry) for entry in info['entries']]
+                        'entries': [self._parse_entry(entry) for entry in info['entries'] if entry]
                     }
                 else: # Es un video individual
-                    return {
-                        'type': 'video',
-                        'entries': [self._parse_entry(info)]
-                    }
+                    return {'type': 'video', 'entries': [self._parse_entry(info)]}
         except Exception as e:
             self.logger.error(f"Error obteniendo información del video: {e}")
             return {'type': 'error', 'message': str(e)}
@@ -123,27 +114,16 @@ class AnimeDownloader:
         }
 
     def download_task(self, task, progress_callback, cancel_event):
-        """Descarga una tarea individual (que puede ser un video de una playlist)."""
         self.logger.info(f"Iniciando descarga de: {task['url']} | Formato: {task['format'].upper()}")
-        
         if not self._check_available_space():
             if progress_callback: progress_callback({'status': 'error', 'error_message': 'Espacio insuficiente.'})
             return
         
         ydl_opts = self._get_ydl_config(progress_callback, cancel_event, task)
-
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(task['url'], download=True)
-            
             if not info: raise Exception("yt-dlp no devolvió información.")
-            
-            filename = ydl.prepare_filename(info)
-            if task['format'] == 'mp3':
-                filename = Path(filename).with_suffix('.mp3')
-            
-            self.logger.info(f"Descarga y procesamiento completado. Archivo: {filename}")
-
         except Exception as e:
             if "cancelada por el usuario" in str(e):
                 self.logger.info(f"Descarga de {task['id']} cancelada.")
@@ -160,11 +140,7 @@ class AnimeDownloader:
     def _check_available_space(self, min_space_gb=1):
         try:
             available = check_disk_space(self.output_path)
-            if available < (min_space_gb * 1024**3):
-                self.logger.error(f"Espacio insuficiente en disco. Disponible: {format_bytes(available)}")
-                return False
-            self.logger.info(f"Espacio disponible: {format_bytes(available)}")
+            if available < (min_space_gb * 1024**3): return False
             return True
-        except Exception as e:
-            self.logger.warning(f"No se pudo verificar el espacio en disco: {e}")
-            return True
+        except Exception:
+            return True # Asumir que hay espacio si la verificación falla
