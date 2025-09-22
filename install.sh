@@ -60,26 +60,41 @@ echo -e "${GREEN}Dependencias instaladas correctamente.${NC}"
 RUN_SCRIPT="run.sh"
 echo -e "\n${YELLOW}Paso 4: Creando el script de ejecución '${RUN_SCRIPT}'...${NC}"
 
-# Usamos 'cat' con un 'heredoc' para escribir el contenido en el archivo
+# Usamos 'cat' con un 'heredoc' para escribir el contenido en el archivo.
+# Este es el bloque modificado que combina la lógica de ambos scripts.
 cat << EOF > $RUN_SCRIPT
 #!/bin/bash
 
-# Activa el entorno virtual
-source "$(dirname "\$0")/${VENV_DIR}/bin/activate"
+# Directorio del script para asegurar que las rutas relativas funcionen correctamente.
+SCRIPT_DIR="\$(dirname "\$0")"
 
-# Ejecuta la aplicación de Python
-python "$(dirname "\$0")/app.py"
+# Activa el entorno virtual.
+source "\${SCRIPT_DIR}/${VENV_DIR}/bin/activate"
 
-# Desactiva el entorno virtual al cerrar (opcional, buena práctica)
-deactivate
+echo "Lanzando la aplicación en segundo plano..."
+echo "Los registros se guardarán en: \${SCRIPT_DIR}/downloader.log"
+
+# --- EJECUCIÓN EN SEGUNDO PLANO ---
+# 'nohup' hace que el proceso ignore la señal de cierre de la terminal.
+# 'python -u' deshabilita el búfer de salida, lo que es bueno para los logs.
+# '> downloader.log 2>&1' redirige stdout y stderr al archivo de log.
+# '&' ejecuta el comando en segundo plano.
+nohup python -u "\${SCRIPT_DIR}/main.py" --gui > "\${SCRIPT_DIR}/downloader.log" 2>&1 &
+
+# Captura el Process ID (PID) del último comando ejecutado en segundo plano.
+PID=\$!
+
+echo "La aplicación se está ejecutando con PID: \$PID"
+echo "Puedes cerrar esta terminal. Para detener la aplicación, usa: kill \$PID"
+
 EOF
 
 # Hacer el script ejecutable
 chmod +x $RUN_SCRIPT
-echo -e "${GREEN}Script de ejecución '${RUN_SCRIPT}' creado.${NC}"
+echo -e "${GREEN}Script de ejecución '${RUN_SCRIPT}' creado con éxito.${NC}"
 
 
 # --- Mensaje final ---
 echo -e "\n${GREEN}¡Instalación completada!${NC}"
-echo -e "Para ejecutar el programa, simplemente usa el siguiente comando:"
+echo -e "Para ejecutar el programa en segundo plano, usa el siguiente comando:"
 echo -e "${YELLOW}./${RUN_SCRIPT}${NC}\n"
