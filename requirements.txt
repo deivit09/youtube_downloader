@@ -1,5 +1,0 @@
-customtkinter
-yt-dlp
-requests
-ffmpeg-python
-Pillow
